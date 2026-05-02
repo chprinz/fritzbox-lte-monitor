@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>at.littleprinz.fritz-monitor</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Pfad anpassen: welches python3 ist aktiv? -->
+        <!-- Im Terminal prüfen: which python3 -->
+        <string>/usr/bin/python3</string>
+        <string>/Users/DEIN_USERNAME/fritz_monitor/fritz_monitor.py</string>
+    </array>
+
+    <!-- Startet automatisch beim Login -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Neustart bei Absturz -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Logs -->
+    <key>StandardOutPath</key>
+    <string>/Users/DEIN_USERNAME/.fritz_monitor/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/DEIN_USERNAME/.fritz_monitor/stderr.log</string>
+</dict>
+</plist>

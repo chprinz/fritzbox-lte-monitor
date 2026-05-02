@@ -1,0 +1,22 @@
+# Build-Artefakte (py2app)
+build/
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.eggs/
+*.egg-info/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Lokale Laufzeit-Daten (außerhalb des Repos, nur zur Sicherheit)
+~/.fritz_monitor/
+
+# IDE
+.vscode/
+.idea/
