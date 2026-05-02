@@ -1,73 +1,73 @@
 # Fritz LTE Monitor
 
-macOS-Menüleisten-App für Fritzbox-LTE-Router (z.B. 6890 LTE). Misst alle 60 Sekunden RSRP, RSRQ und RSSI der verbundenen LTE-Zellen und zeigt den Verlauf in einem lokalen Web-Dashboard unter **http://127.0.0.1:5433**.
+macOS menu-bar app for AVM Fritzbox LTE routers (e.g. 6890 LTE). Polls signal metrics every 60 seconds via TR-064 and shows a live dashboard at **http://127.0.0.1:5433**.
 
-![Menüleiste: 🟢 −76 dBm](https://img.shields.io/badge/macOS-13%2B-blue) ![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue)
+![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue) ![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue)
 
 ---
 
 ## Features
 
-- **Menüleisten-Ampel** 🟢/🟡/🔴 mit aktuellem RSRP-Wert
-- **Web-Dashboard** mit Live-Karten für RSRP, RSRQ, RSSI und Netzlast
-- **Netzlast** direkt aus der Fritzbox (Feld `Utilization`), mit Fallback auf RSRQ-Schätzung
-- **Carrier Aggregation** – 2. Zelle (RSRP / RSRQ) wird separat angezeigt
-- **Signalverlauf** als Chart (6h / 24h / 3d / 7d)
-- **Zellenabstand** (Primär- und Sekundärzelle)
-- Alle Daten lokal in SQLite gespeichert – kein Cloud-Dienst, kein Internet erforderlich
-- Optional als native macOS-App baubar (py2app)
+- **Menu-bar indicator** 🟢/🟡/🔴 with current RSRP value
+- **Live dashboard** with cards for RSRP, RSRQ, RSSI and cell load
+- **Cell load** read directly from the Fritzbox (`Utilization` field), with RSRQ-based fallback
+- **Carrier Aggregation** — secondary cell RSRP/RSRQ shown separately
+- **Signal history** chart (6h / 24h / 3d / 7d)
+- **Cell distance** for primary and secondary cell
+- All data stored locally in SQLite — no cloud, no internet required
+- Optional native macOS app build via py2app
 
 ---
 
 ## Dashboard
 
-| Karte | Bedeutung | Gut | Ok | Schwach |
-|-------|-----------|-----|----|---------|
-| **RSRP** | Empfangsstärke der Zelle (dBm) | ≥ −80 | ≥ −95 | < −95 |
-| **RSRQ** | Signalqualität – sinkt bei Netzlast (dB) | ≥ −9 | ≥ −12 | < −12 |
-| **Netzlast** | Zellenauslastung % (direkt oder aus RSRQ) | < 40 % | < 65 % | ≥ 65 % |
-| **RSSI** | Gesamtpegel inkl. Rauschen (dBm) | ≥ −80 | – | – |
+| Metric | Description | Good | Ok | Weak |
+|--------|-------------|------|----|------|
+| **RSRP** | Received signal strength (dBm) | ≥ −80 | ≥ −95 | < −95 |
+| **RSRQ** | Signal quality — drops under load (dB) | ≥ −9 | ≥ −12 | < −12 |
+| **Cell load** | Channel utilization % (direct or estimated) | < 40 % | < 65 % | ≥ 65 % |
+| **RSSI** | Total received power incl. noise (dBm) | ≥ −80 | — | — |
 
-Das Menüleisten-Icon zeigt:
+Menu-bar icon meanings:
 - 🟢 RSRP ≥ −80 dBm
-- 🟡 RSRP −80 bis −95 dBm
+- 🟡 RSRP −80 to −95 dBm
 - 🔴 RSRP < −95 dBm
-- ⚪ keine Verbindung / Fehler
+- ⚪ No connection / error
 
 ---
 
-## Einrichtung
+## Setup
 
-### 1. Abhängigkeiten installieren
+### 1. Install dependencies
 
 ```bash
 pip3 install rumps fritzconnection
 ```
 
-### 2. App starten
+### 2. Run
 
 ```bash
 python3 fritz_monitor.py
 ```
 
-Das Menüleisten-Icon erscheint oben rechts (⚪ beim ersten Start).
+The menu-bar icon appears in the top-right corner (⚪ on first start).
 
-### 3. Fritzbox-Zugang konfigurieren
+### 3. Configure Fritzbox access
 
-Icon anklicken → **Passwort setzen…** → Fritzbox-Kennwort eingeben.
+Click the icon → **Set password…** → enter your Fritzbox password.
 
-- Adresse ist standardmäßig `fritz.box` (passt für die meisten Setups)
-- Zum Ändern: Icon → **Adresse ändern…**
+- Default address is `fritz.box` (works for most setups)
+- To change: icon → **Change address…**
 
-Nach ca. 60 Sekunden wechselt das Icon auf 🟢/🟡/🔴 + RSRP-Wert.
+After ~60 seconds the icon switches to 🟢/🟡/🔴 with the current RSRP value.
 
-### 4. Dashboard öffnen
+### 4. Open dashboard
 
-Icon → **Dashboard öffnen** oder direkt: http://127.0.0.1:5433
+Icon → **Open dashboard** or directly: http://127.0.0.1:5433
 
 ---
 
-## Als native macOS-App bauen (optional)
+## Build as native macOS app (optional)
 
 ```bash
 pip install py2app
@@ -76,76 +76,76 @@ rm -rf build dist
 python3 setup.py py2app
 ```
 
-Die fertige App liegt danach unter `dist/Fritz LTE Monitor.app`.
+The finished app will be at `dist/Fritz LTE Monitor.app`.
 
 ---
 
-## Autostart mit launchd
+## Autostart with launchd
 
 ```bash
-# 1. plist kopieren
+# 1. Copy the plist
 cp at.littleprinz.fritz-monitor.plist ~/Library/LaunchAgents/
 
-# 2. Pfade anpassen (USERNAME, Pfad zu python3, Pfad zum Skript)
+# 2. Adjust paths (your username, path to python3, path to script)
 nano ~/Library/LaunchAgents/at.littleprinz.fritz-monitor.plist
 
-# 3. Laden
+# 3. Load
 launchctl load ~/Library/LaunchAgents/at.littleprinz.fritz-monitor.plist
 ```
 
-Zum Deaktivieren:
+To disable:
 ```bash
 launchctl unload ~/Library/LaunchAgents/at.littleprinz.fritz-monitor.plist
 ```
 
 ---
 
-## Daten & Dateien
+## Data & files
 
-Alle Laufzeit-Dateien liegen in `~/.fritz_monitor/`:
+All runtime files are stored in `~/.fritz_monitor/`:
 
-| Datei | Inhalt |
-|-------|--------|
-| `config.json` | Fritzbox-Adresse, Passwort, Messintervall |
-| `signals.db` | SQLite-Datenbank mit komplettem Signalverlauf |
-| `stdout.log` / `stderr.log` | Logs (nur bei launchd-Betrieb) |
+| File | Contents |
+|------|----------|
+| `config.json` | Fritzbox address, password, poll interval |
+| `signals.db` | SQLite database with complete signal history |
+| `stdout.log` / `stderr.log` | Logs (launchd mode only) |
 
-Die Datenbank kann direkt mit [DB Browser for SQLite](https://sqlitebrowser.org) geöffnet werden.
+The database can be opened directly with [DB Browser for SQLite](https://sqlitebrowser.org).
 
 ---
 
-## Fehlerbehebung
+## Troubleshooting
 
-**Icon bleibt ⚪ / keine Daten:**
+**Icon stays ⚪ / no data:**
 
-Fritzbox-Erreichbarkeit testen:
+Test Fritzbox connectivity:
 ```bash
 python3 -c "
 from fritzconnection import FritzConnection
-fc = FritzConnection('fritz.box', password='DEIN_PW')
+fc = FritzConnection('fritz.box', password='YOUR_PW')
 print(fc.call_action('X_AVM-DE_WANMobileConnection:1', 'GetInfoEx'))
 "
 ```
 
-**Netzlast zeigt „aus RSRQ" statt „direkt":**
+**Cell load shows "from RSRQ" instead of "direct":**
 
-Die Fritzbox liefert den Nutzungswert je nach Firmware/Modell unter dem Tag `<Utilization>`. Der `/api/debug`-Endpoint (http://127.0.0.1:5433/api/debug) zeigt das tatsächlich gelieferte XML — falls der Tag anders heißt, kann er in `_parse_cell()` angepasst werden.
+The Fritzbox reports utilization in the `<Utilization>` XML tag. The `/api/debug` endpoint (http://127.0.0.1:5433/api/debug) shows the raw XML — if the tag name differs in your firmware version, adjust it in `_parse_cell()`.
 
-**Debug-Endpoint:**
+**Debug endpoint:**
 
-http://127.0.0.1:5433/api/debug zeigt die letzten 5 Roheinträge aus der Datenbank.
+http://127.0.0.1:5433/api/debug — shows the last 5 raw entries from the database.
 
 ---
 
-## Voraussetzungen
+## Requirements
 
 - macOS 13+
 - Python 3.9+
-- Fritzbox mit LTE-Modem (getestet mit 6890 LTE)
-- TR-064 aktiviert: **Heimnetz → Netzwerk → Heimnetzfreigaben** (meist schon aktiv)
+- Fritzbox with LTE modem (tested with 6890 LTE)
+- TR-064 enabled: **Home Network → Network → Home network sharing** (usually already active)
 
 ---
 
-## Lizenz
+## License
 
 MIT
