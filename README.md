@@ -67,6 +67,14 @@ Icon → **Open dashboard** or directly: http://127.0.0.1:5433
 
 ---
 
+## Download
+
+Pre-built `.app` bundles are available on the [Releases](../../releases) page.
+
+> **Note:** The app is not signed with an Apple Developer certificate. On first launch macOS will block it — right-click the app → **Open** → **Open** to bypass Gatekeeper. This is only needed once.
+
+---
+
 ## Build as native macOS app (optional)
 
 ```bash
