@@ -170,12 +170,15 @@ def query_all_raw() -> list:
 # ── Fritzbox Datenabruf ───────────────────────────────────────────────────────
 
 def _fritz_ensure_session(address: str, username: str, password: str) -> tuple[bool, int]:
-    """Stellt eine aktive Fritz!Box-Web-Session sicher (SID-Login).
+    """Stellt eine aktive Fritz!Box-Web-Session sicher (SID-Login via MD5).
     Gibt (success, block_time_sekunden) zurück.
-    Benötigt Benutzername wenn die Fritz!Box Benutzerverwaltung aktiviert hat."""
+    Hinweis: Obwohl neuere Fritz!OS PBKDF2 (version=2) anbieten, ist die
+    PBKDF2-Validierung in manchen Firmware-Versionen fehlerhaft. MD5 ist
+    breiter kompatibel und ausreichend für das lokale Netz."""
     base = f"http://{address}"
     try:
-        with urllib.request.urlopen(f"{base}/login_sid.lua?version=2", timeout=10) as resp:
+        # Erst prüfen ob bereits eine aktive Session existiert
+        with urllib.request.urlopen(f"{base}/login_sid.lua", timeout=10) as resp:
             xml = resp.read().decode()
         root = ET.fromstring(xml)
         sid = root.findtext("SID", "0000000000000000")
@@ -186,23 +189,13 @@ def _fritz_ensure_session(address: str, username: str, password: str) -> tuple[b
         if block_time > 0:
             return False, block_time  # Gesperrt – nicht nochmal versuchen
 
+        # MD5-Challenge (kompatibel mit allen Fritz!OS-Versionen)
         challenge = root.findtext("Challenge", "")
-
-        # Fritz!OS >= 7.24: PBKDF2 (Challenge beginnt mit "2$")
-        if challenge.startswith("2$"):
-            parts = challenge.split("$")
-            iter1, salt1 = int(parts[1]), bytes.fromhex(parts[2])
-            iter2, salt2 = int(parts[3]), bytes.fromhex(parts[4])
-            h1 = hashlib.pbkdf2_hmac("sha256", password.encode(), salt1, iter1)
-            h2 = hashlib.pbkdf2_hmac("sha256", h1, salt2, iter2)
-            response = f"{challenge}${h2.hex()}"
-        else:
-            # Ältere Fritz!OS: MD5-Challenge
-            to_hash = f"{challenge}-{password}"
-            response = f"{challenge}-{hashlib.md5(to_hash.encode('utf-16-le')).hexdigest()}"
+        to_hash = f"{challenge}-{password}"
+        response = f"{challenge}-{hashlib.md5(to_hash.encode('utf-16-le')).hexdigest()}"
 
         data = urlparse_mod.urlencode({"username": username, "response": response}).encode()
-        req = urllib.request.Request(f"{base}/login_sid.lua?version=2", data=data)
+        req = urllib.request.Request(f"{base}/login_sid.lua", data=data)
         with urllib.request.urlopen(req, timeout=10) as resp:
             xml = resp.read().decode()
         root = ET.fromstring(xml)
