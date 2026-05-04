@@ -726,7 +726,12 @@ class Poller(threading.Thread):
 
     def run(self):
         time.sleep(3)
+        auth_backoff = 0  # Wartezeit bei Auth-Fehlern (verhindert BlockTime-Loops)
         while True:
+            if auth_backoff > 0:
+                time.sleep(auth_backoff)
+                auth_backoff = 0
+
             cfg      = load_config()
             pw       = cfg.get("fritz_password", "")
             username = cfg.get("fritz_username", "")
@@ -736,7 +741,12 @@ class Poller(threading.Thread):
                     insert_record(data)
                     self._ui(self.app.refresh, data, None)
                 except Exception as e:
-                    self._ui(self.app.refresh, None, str(e))
+                    err = str(e)
+                    self._ui(self.app.refresh, None, err)
+                    # Bei BlockTime oder Login-Fehler: länger warten damit
+                    # die Sperre ablaufen kann, bevor wir erneut versuchen
+                    if "gesperrt" in err or "Login fehlgeschlagen" in err or "401" in err:
+                        auth_backoff = 300  # 5 Minuten warten
             else:
                 self._ui(self.app.refresh, None, "Passwort nicht gesetzt")
             time.sleep(cfg.get("poll_interval", POLL_INTERVAL))
