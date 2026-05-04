@@ -43,6 +43,7 @@ POLL_INTERVAL = 60  # Sekunden
 
 DEFAULT_CONFIG = {
     "fritz_address":  "fritz.box",
+    "fritz_username": "",
     "fritz_password": "",
     "poll_interval":  60,
 }
@@ -168,9 +169,10 @@ def query_all_raw() -> list:
 
 # ── Fritzbox Datenabruf ───────────────────────────────────────────────────────
 
-def _fritz_ensure_session(address: str, password: str) -> bool:
-    """Stellt sicher dass eine aktive Fritz!Box-Web-Session existiert.
-    Ohne diese lehnt die Box TR-064-Anfragen mit 401 ab."""
+def _fritz_ensure_session(address: str, username: str, password: str) -> tuple[bool, int]:
+    """Stellt eine aktive Fritz!Box-Web-Session sicher (SID-Login).
+    Gibt (success, block_time_sekunden) zurück.
+    Benötigt Benutzername wenn die Fritz!Box Benutzerverwaltung aktiviert hat."""
     base = f"http://{address}"
     try:
         with urllib.request.urlopen(f"{base}/login_sid.lua?version=2", timeout=10) as resp:
@@ -178,13 +180,13 @@ def _fritz_ensure_session(address: str, password: str) -> bool:
         root = ET.fromstring(xml)
         sid = root.findtext("SID", "0000000000000000")
         if sid != "0000000000000000":
-            return True  # Session noch aktiv
+            return True, 0  # Session noch aktiv
 
-        challenge = root.findtext("Challenge", "")
         block_time = int(root.findtext("BlockTime", "0") or "0")
         if block_time > 0:
-            time.sleep(min(block_time, 30))
-            return False
+            return False, block_time  # Gesperrt – nicht nochmal versuchen
+
+        challenge = root.findtext("Challenge", "")
 
         # Fritz!OS >= 7.24: PBKDF2 (Challenge beginnt mit "2$")
         if challenge.startswith("2$"):
@@ -199,15 +201,16 @@ def _fritz_ensure_session(address: str, password: str) -> bool:
             to_hash = f"{challenge}-{password}"
             response = f"{challenge}-{hashlib.md5(to_hash.encode('utf-16-le')).hexdigest()}"
 
-        data = urlparse_mod.urlencode({"username": "", "response": response}).encode()
+        data = urlparse_mod.urlencode({"username": username, "response": response}).encode()
         req = urllib.request.Request(f"{base}/login_sid.lua?version=2", data=data)
         with urllib.request.urlopen(req, timeout=10) as resp:
             xml = resp.read().decode()
         root = ET.fromstring(xml)
         sid = root.findtext("SID", "0000000000000000")
-        return sid != "0000000000000000"
+        new_block = int(root.findtext("BlockTime", "0") or "0")
+        return sid != "0000000000000000", new_block
     except Exception:
-        return False
+        return False, 0
 
 
 def _parse_cell(cell_el) -> dict:
@@ -234,9 +237,21 @@ def _parse_cell(cell_el) -> dict:
     }
 
 
-def fetch_lte_data(address: str, password: str) -> dict:
-    _fritz_ensure_session(address, password)
-    fc = FritzConnection(address=address, password=password, timeout=10)
+def fetch_lte_data(address: str, username: str, password: str) -> dict:
+    ok, block = _fritz_ensure_session(address, username, password)
+    if not ok:
+        if block > 0:
+            raise ConnectionError(
+                f"Fritz!Box hat Login gesperrt ({block}s). "
+                f"Zu viele Fehlversuche – bitte {block}s warten."
+            )
+        if not username:
+            raise ConnectionError(
+                "Login fehlgeschlagen. Deine Fritz!Box hat Benutzerverwaltung aktiviert "
+                "– bitte Benutzernamen unter 'Benutzername setzen…' eintragen."
+            )
+        raise ConnectionError("Fritz!Box-Login fehlgeschlagen (falsches Passwort?).")
+    fc = FritzConnection(address=address, user=username, password=password, timeout=10)
     raw = fc.call_action(LTE_SERVICE, "GetInfoEx")
 
     primary, secondary = {}, {}
@@ -712,11 +727,12 @@ class Poller(threading.Thread):
     def run(self):
         time.sleep(3)
         while True:
-            cfg = load_config()
-            pw  = cfg.get("fritz_password", "")
+            cfg      = load_config()
+            pw       = cfg.get("fritz_password", "")
+            username = cfg.get("fritz_username", "")
             if pw:
                 try:
-                    data  = fetch_lte_data(cfg["fritz_address"], pw)
+                    data = fetch_lte_data(cfg["fritz_address"], username, pw)
                     insert_record(data)
                     self._ui(self.app.refresh, data, None)
                 except Exception as e:
@@ -732,15 +748,16 @@ class FritzMonitor(rumps.App):
     def __init__(self):
         super().__init__("⚪ LTE", quit_button=None)
 
-        self._status   = rumps.MenuItem("Starte…")
-        self._rsrp     = rumps.MenuItem("")
-        self._rsrq     = rumps.MenuItem("")
-        self._dist     = rumps.MenuItem("")
-        self._band     = rumps.MenuItem("")
-        self._open     = rumps.MenuItem("Dashboard öffnen", callback=self._open_dashboard)
-        self._set_pw   = rumps.MenuItem("Passwort setzen…", callback=self._set_password)
-        self._set_addr = rumps.MenuItem("Adresse ändern…",  callback=self._set_address)
-        self._quit     = rumps.MenuItem("Beenden", callback=rumps.quit_application)
+        self._status    = rumps.MenuItem("Starte…")
+        self._rsrp      = rumps.MenuItem("")
+        self._rsrq      = rumps.MenuItem("")
+        self._dist      = rumps.MenuItem("")
+        self._band      = rumps.MenuItem("")
+        self._open      = rumps.MenuItem("Dashboard öffnen",   callback=self._open_dashboard)
+        self._set_user  = rumps.MenuItem("Benutzername setzen…", callback=self._set_username)
+        self._set_pw    = rumps.MenuItem("Passwort setzen…",   callback=self._set_password)
+        self._set_addr  = rumps.MenuItem("Adresse ändern…",    callback=self._set_address)
+        self._quit      = rumps.MenuItem("Beenden",            callback=rumps.quit_application)
 
         self.menu = [
             self._status,
@@ -751,6 +768,7 @@ class FritzMonitor(rumps.App):
             self._band,
             None,
             self._open,
+            self._set_user,
             self._set_pw,
             self._set_addr,
             None,
@@ -836,6 +854,17 @@ class FritzMonitor(rumps.App):
         if response == AppKit.NSAlertFirstButtonReturn:
             return field.stringValue()
         return None
+
+    def _set_username(self, _):
+        cfg  = load_config()
+        text = self._ask_text(
+            "Fritzbox Benutzername",
+            "Fritzbox-Benutzernamen eingeben\n(leer lassen wenn kein Benutzername gesetzt):",
+            default=cfg.get("fritz_username", ""),
+        )
+        if text is not None:  # auch leerer String ist gültig
+            cfg["fritz_username"] = text.strip()
+            save_config(cfg)
 
     def _set_password(self, _):
         text = self._ask_text(

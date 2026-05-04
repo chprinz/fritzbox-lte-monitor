@@ -54,10 +54,15 @@ The menu-bar icon appears in the top-right corner (⚪ on first start).
 
 ### 3. Configure Fritzbox access
 
-Click the icon → **Set password…** → enter your Fritzbox password.
+Click the icon and set your credentials:
 
-- Default address is `fritz.box` (works for most setups)
-- To change: icon → **Change address…**
+| Menu item | What to enter |
+|-----------|---------------|
+| **Set username…** | Your Fritzbox username (required if user management is enabled) |
+| **Set password…** | Your Fritzbox password |
+| **Change address…** | IP or hostname — default `fritz.box` works for most setups |
+
+> **Username required?** Open the Fritzbox web UI → System → Fritzbox Users. If you see individual accounts listed (instead of a single password), you must set a username in the app. Without it, every poll attempt will fail with 401 and eventually trigger the Fritzbox's brute-force lockout.
 
 After ~60 seconds the icon switches to 🟢/🟡/🔴 with the current RSRP value.
 
@@ -114,7 +119,7 @@ All runtime files are stored in `~/.fritz_monitor/`:
 
 | File | Contents |
 |------|----------|
-| `config.json` | Fritzbox address, password, poll interval |
+| `config.json` | Fritzbox address, username, password, poll interval |
 | `signals.db` | SQLite database with complete signal history |
 | `stdout.log` / `stderr.log` | Logs (launchd mode only) |
 
@@ -124,13 +129,17 @@ The database can be opened directly with [DB Browser for SQLite](https://sqliteb
 
 ## Troubleshooting
 
+**401 Unauthorized on startup / works only after browser login:**
+
+Your Fritzbox has user management enabled and requires a username. Set it via icon → **Set username…**. Without a username the app sends anonymous TR-064 requests that the Fritzbox rejects — repeated failures trigger the built-in brute-force lockout (BlockTime). The app now detects this and shows a clear error message instead of retrying blindly.
+
 **Icon stays ⚪ / no data:**
 
 Test Fritzbox connectivity:
 ```bash
 python3 -c "
 from fritzconnection import FritzConnection
-fc = FritzConnection('fritz.box', password='YOUR_PW')
+fc = FritzConnection('fritz.box', user='YOUR_USER', password='YOUR_PW')
 print(fc.call_action('X_AVM-DE_WANMobileConnection:1', 'GetInfoEx'))
 "
 ```
