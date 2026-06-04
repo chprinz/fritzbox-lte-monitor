@@ -965,6 +965,7 @@ class FritzMonitor(rumps.App):
         self._status    = rumps.MenuItem("Starte…")
         self._rsrp      = rumps.MenuItem("")
         self._rsrq      = rumps.MenuItem("")
+        self._load      = rumps.MenuItem("")
         self._dist      = rumps.MenuItem("")
         self._band      = rumps.MenuItem("")
         self._open      = rumps.MenuItem("Dashboard öffnen",   callback=self._open_dashboard)
@@ -978,6 +979,7 @@ class FritzMonitor(rumps.App):
             None,  # Trennlinie
             self._rsrp,
             self._rsrq,
+            self._load,
             self._dist,
             self._band,
             None,
@@ -1005,9 +1007,10 @@ class FritzMonitor(rumps.App):
             self._status.title = f"Fehler: {error}"
             return
 
-        rsrp  = data.get("rsrp")
-        rsrq  = data.get("rsrq")
-        dist  = data.get("distance")
+        rsrp    = data.get("rsrp")
+        rsrq    = data.get("rsrq")
+        nutzung = data.get("nutzung")
+        dist    = data.get("distance")
         dist2 = data.get("distance2")
         prov  = data.get("provider") or ""
         std   = data.get("standard") or "LTE"
@@ -1020,6 +1023,10 @@ class FritzMonitor(rumps.App):
         self._status.title = f"Aktualisiert {now}  –  {prov}"
         self._rsrp.title   = f"RSRP   {rsrp:.1f} dBm" if rsrp is not None else "RSRP   –"
         self._rsrq.title   = f"RSRQ   {rsrq:.1f} dB"  if rsrq is not None else "RSRQ   –"
+        if nutzung is not None:
+            self._load.title = f"Netzlast   {int(nutzung)} %"
+        else:
+            self._load.title = "Netzlast   –"
 
         if dist is not None and dist2 is not None:
             self._dist.title = f"Entf.  {dist} m  /  {dist2} m  (pri/sek)"

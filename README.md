@@ -8,11 +8,11 @@ macOS menu-bar app for AVM Fritzbox LTE routers (e.g. 6890 LTE). Polls signal me
 
 ## Features
 
-- **Menu-bar indicator** 🟢/🟡/🔴 with current RSRP value
-- **Live dashboard** with cards for RSRP, RSRQ, RSSI and cell load
-- **Cell load** read from the Fritzbox web UI scan list (“Nutzung” column, same as *Netze in Reichweite*)
+- **Menu-bar indicator** 🟢/🟡/🔴 with current RSRP in the title; dropdown shows RSRP, RSRQ, **cell load %**, distance, and radio technology
+- **Live dashboard** with cards for RSRP, RSRQ, RSSI, and cell load
+- **Cell load** from the Fritzbox web UI scan list (same **Utilization** column as *Internet → LTE information → Networks in range*) — not estimated from RSRQ
 - **Carrier Aggregation** — secondary cell RSRP/RSRQ shown separately
-- **Signal history** chart (6h / 24h / 3d / 7d)
+- **Signal history** — separate RSRP and RSRQ charts with a true time axis (6h / 24h / 3d / 7d); gaps when the app was not running are not interpolated
 - **Cell distance** for primary and secondary cell
 - All data stored locally in SQLite — no cloud, no internet required
 - Optional native macOS app build via py2app
@@ -33,6 +33,16 @@ Menu-bar icon meanings:
 - 🟡 RSRP −80 to −95 dBm
 - 🔴 RSRP < −95 dBm
 - ⚪ No connection / error
+
+Click the icon for live values (updated every poll interval, default 60 s):
+
+| Line | Example |
+|------|---------|
+| RSRP | `RSRP   -92.0 dBm` |
+| RSRQ | `RSRQ   -8.0 dB` |
+| Cell load | `Netzlast   100 %` (Fritzbox scan list) |
+| Distance | `Entf.  1716 m` |
+| Technology | `LTE` |
 
 ---
 
@@ -144,9 +154,9 @@ print(fc.call_action('X_AVM-DE_WANMobileConnection:1', 'GetInfoEx'))
 "
 ```
 
-**Cell load shows "kein Wert" / empty chart:**
+**Cell load shows "–" / empty history chart:**
 
-TR-064 `GetInfoEx` does not include cell utilization on most firmware versions. The app reads the **Nutzung** column from the Fritzbox page *Internet → LTE information → Networks in range* (`lte_scanlist.lua`). Ensure web login works (username/password in the menu). After restarting the app, new polls should show **Fritzbox** under the Netzlast card. Old database rows have no utilization values.
+TR-064 `GetInfoEx` does not include cell utilization on most firmware versions. The app reads the utilization column from the Fritzbox page *Internet → LTE information → Networks in range* via `lte_scanlist.lua`. Ensure web login works (username and password in the menu). After restarting the app, new polls should show **Fritzbox** on the cell-load card and a percentage in the menu dropdown. Older database rows may have no utilization values (from before v1.1.0).
 
 **Debug endpoint:**
 

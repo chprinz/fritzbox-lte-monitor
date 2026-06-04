@@ -1,6 +1,7 @@
-# Build-Artefakte (py2app)
+# Build artifacts (py2app)
 build/
 dist/
+Fritz.LTE.Monitor.app.zip
 
 # Python
 __pycache__/
