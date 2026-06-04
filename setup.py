@@ -8,8 +8,8 @@ OPTIONS = {
         "CFBundleName":             "Fritz LTE Monitor",
         "CFBundleDisplayName":      "Fritz LTE Monitor",
         "CFBundleIdentifier":       "de.fritz.lte-monitor",
-        "CFBundleVersion":          "1.0.0",
-        "CFBundleShortVersionString": "1.0",
+        "CFBundleVersion":          "1.1.0",
+        "CFBundleShortVersionString": "1.1",
         "LSUIElement":              True,   # Menu-Bar-only, kein Dock-Icon
         "NSAppTransportSecurity":   {"NSAllowsLocalNetworking": True},
     },

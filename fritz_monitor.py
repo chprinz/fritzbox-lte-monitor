@@ -12,6 +12,7 @@ import os
 import json
 import webbrowser
 import hashlib
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -131,10 +132,28 @@ def insert_record(data: dict):
         data.get("cell_id"),
         data.get("provider"),
         data.get("standard"),
-        json.dumps(data.get("raw", {}), default=str),
+        json.dumps({
+            "tr064": data.get("raw", {}),
+            "meta": {
+                "nutzung_source": data.get("nutzung_source"),
+            },
+        }, default=str),
     ))
     con.commit()
     con.close()
+
+
+def _enrich_row(row: dict) -> dict:
+    if not row:
+        return row
+    out = dict(row)
+    try:
+        stored = json.loads(row.get("raw_json") or "{}")
+        if isinstance(stored, dict):
+            out["nutzung_source"] = (stored.get("meta") or {}).get("nutzung_source")
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return out
 
 
 def query_latest() -> dict:
@@ -142,7 +161,7 @@ def query_latest() -> dict:
     con.row_factory = sqlite3.Row
     row = con.execute("SELECT * FROM signal ORDER BY ts DESC LIMIT 1").fetchone()
     con.close()
-    return dict(row) if row else {}
+    return _enrich_row(dict(row)) if row else {}
 
 
 def query_history(hours: int = 24) -> list:
@@ -169,27 +188,21 @@ def query_all_raw() -> list:
 
 # ── Fritzbox Datenabruf ───────────────────────────────────────────────────────
 
-def _fritz_ensure_session(address: str, username: str, password: str) -> tuple[bool, int]:
-    """Stellt eine aktive Fritz!Box-Web-Session sicher (SID-Login via MD5).
-    Gibt (success, block_time_sekunden) zurück.
-    Hinweis: Obwohl neuere Fritz!OS PBKDF2 (version=2) anbieten, ist die
-    PBKDF2-Validierung in manchen Firmware-Versionen fehlerhaft. MD5 ist
-    breiter kompatibel und ausreichend für das lokale Netz."""
+def _fritz_get_sid(address: str, username: str, password: str) -> tuple[str | None, int]:
+    """SID für Web-UI (login_sid.lua, MD5). Gibt (sid, block_time_sekunden) zurück."""
     base = f"http://{address}"
     try:
-        # Erst prüfen ob bereits eine aktive Session existiert
         with urllib.request.urlopen(f"{base}/login_sid.lua", timeout=10) as resp:
             xml = resp.read().decode()
         root = ET.fromstring(xml)
         sid = root.findtext("SID", "0000000000000000")
         if sid != "0000000000000000":
-            return True, 0  # Session noch aktiv
+            return sid, 0
 
         block_time = int(root.findtext("BlockTime", "0") or "0")
         if block_time > 0:
-            return False, block_time  # Gesperrt – nicht nochmal versuchen
+            return None, block_time
 
-        # MD5-Challenge (kompatibel mit allen Fritz!OS-Versionen)
         challenge = root.findtext("Challenge", "")
         to_hash = f"{challenge}-{password}"
         response = f"{challenge}-{hashlib.md5(to_hash.encode('utf-16-le')).hexdigest()}"
@@ -201,9 +214,69 @@ def _fritz_ensure_session(address: str, username: str, password: str) -> tuple[b
         root = ET.fromstring(xml)
         sid = root.findtext("SID", "0000000000000000")
         new_block = int(root.findtext("BlockTime", "0") or "0")
-        return sid != "0000000000000000", new_block
+        if sid == "0000000000000000":
+            return None, new_block
+        return sid, new_block
     except Exception:
-        return False, 0
+        return None, 0
+
+
+def _fritz_ensure_session(address: str, username: str, password: str) -> tuple[bool, int]:
+    sid, block = _fritz_get_sid(address, username, password)
+    return sid is not None, block
+
+
+def _strip_html(fragment: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", fragment)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _parse_utilization_text(text: str) -> int | None:
+    if not text or text in ("—", "-", "–"):
+        return None
+    m = re.search(r"(\d+)\s*%", text)
+    return int(m.group(1)) if m else None
+
+
+def _fetch_lte_scanlist_html(address: str, sid: str) -> str:
+    """Netze-in-Reichweite-Tabelle (Spalte „Nutzung“) – wie Fritzbox-UI lteList."""
+    data = urlparse_mod.urlencode({"sid": sid, "xhr": "1"}).encode()
+    req = urllib.request.Request(
+        f"http://{address}/internet/lte_scanlist.lua",
+        data=data,
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return resp.read().decode("utf-8", errors="replace")
+
+
+def _parse_lte_scanlist_utilization(html: str) -> tuple[int | None, int | None]:
+    """Nutzung % der verbundenen Zelle(n) aus der Scanliste (Zeile tr.connected)."""
+    connected: list[int | None] = []
+    for m in re.finditer(r"<tr([^>]*)>(.*?)</tr>", html, re.S | re.I):
+        attrs, inner = m.group(1), m.group(2)
+        if "thead" in attrs or "emptylist" in attrs:
+            continue
+        tds = re.findall(r"<td[^>]*>(.*?)</td>", inner, re.S | re.I)
+        if len(tds) < 2:
+            continue
+        if "connected" not in attrs:
+            continue
+        texts = [_strip_html(t) for t in tds]
+        connected.append(_parse_utilization_text(texts[-1]))
+    if not connected:
+        return None, None
+    nutzung = connected[0]
+    nutzung2 = connected[1] if len(connected) > 1 else None
+    return nutzung, nutzung2
+
+
+def _fetch_cell_utilization(address: str, sid: str) -> tuple[int | None, int | None]:
+    try:
+        html = _fetch_lte_scanlist_html(address, sid)
+        return _parse_lte_scanlist_utilization(html)
+    except Exception:
+        return None, None
 
 
 def _parse_cell(cell_el) -> dict:
@@ -231,8 +304,8 @@ def _parse_cell(cell_el) -> dict:
 
 
 def fetch_lte_data(address: str, username: str, password: str) -> dict:
-    ok, block = _fritz_ensure_session(address, username, password)
-    if not ok:
+    sid, block = _fritz_get_sid(address, username, password)
+    if not sid:
         if block > 0:
             raise ConnectionError(
                 f"Fritz!Box hat Login gesperrt ({block}s). "
@@ -264,22 +337,31 @@ def fetch_lte_data(address: str, username: str, password: str) -> dict:
     if not primary:
         raise ConnectionError("Keine Zelldaten erhalten – Box erreichbar, aber keine aktive LTE-Zelle?")
 
+    nutzung, nutzung2 = _fetch_cell_utilization(address, sid)
+    nutzung_source = "scanlist" if nutzung is not None else None
+    # TR-064 CellList enthält auf den meisten Firmwares kein Utilization-Feld
+    if nutzung is None and primary.get("nutzung") is not None:
+        nutzung = primary.get("nutzung")
+        nutzung2 = secondary.get("nutzung")
+        nutzung_source = "tr064"
+
     return {
-        "raw":       raw,
-        "rsrp":      primary.get("rsrp"),
-        "rsrq":      primary.get("rsrq"),
-        "distance":  primary.get("distance"),
-        "rssi":      primary.get("rssi"),
-        "rsrp2":     secondary.get("rsrp"),
-        "rsrq2":     secondary.get("rsrq"),
-        "rssi2":     secondary.get("rssi"),
-        "distance2": secondary.get("distance"),
-        "nutzung":   primary.get("nutzung"),
-        "nutzung2":  secondary.get("nutzung"),
-        "provider":  primary.get("provider"),
-        "cell_id":   primary.get("cell_id"),
-        "standard":  raw.get("NewCurrentAccessTechnology", "LTE"),
-        "band":      raw.get("NewCurrentAccessTechnology", "LTE"),
+        "raw":            raw,
+        "rsrp":           primary.get("rsrp"),
+        "rsrq":           primary.get("rsrq"),
+        "distance":       primary.get("distance"),
+        "rssi":           primary.get("rssi"),
+        "rsrp2":          secondary.get("rsrp"),
+        "rsrq2":          secondary.get("rsrq"),
+        "rssi2":          secondary.get("rssi"),
+        "distance2":      secondary.get("distance"),
+        "nutzung":        nutzung,
+        "nutzung2":       nutzung2,
+        "nutzung_source": nutzung_source,
+        "provider":       primary.get("provider"),
+        "cell_id":        primary.get("cell_id"),
+        "standard":       raw.get("NewCurrentAccessTechnology", "LTE"),
+        "band":           raw.get("NewCurrentAccessTechnology", "LTE"),
     }
 
 
@@ -408,6 +490,15 @@ h1 { font-size: 1rem; font-weight: 400; color: #6060a0; letter-spacing: 0.06em; 
   text-transform: uppercase;
   letter-spacing: 0.1em;
 }
+.chart-subtitle {
+  font-size: 11px;
+  color: #666680;
+  margin: 12px 0 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.chart-subtitle:first-of-type { margin-top: 0; }
+.chart-coverage { color: #a78bfa; margin-top: 8px; }
 .chart-hint {
   font-size: 11px;
   color: #444460;
@@ -453,9 +544,9 @@ canvas { display: block; }
     <div class="card-sub" id="v-rsrq-sub">dB · ≥ −9 gut · sinkt bei Netzlast</div>
   </div>
   <div class="card">
-    <div class="card-label">Netzlast <span class="hint" id="v-load-hint">aus RSRQ</span></div>
+    <div class="card-label">Netzlast <span class="hint" id="v-load-hint">Fritzbox</span></div>
     <div class="card-value na" id="v-load">–</div>
-    <div class="card-sub" id="v-load-source">% geschätzte Zellenauslastung</div>
+    <div class="card-sub" id="v-load-source">Zell-Auslastung (Netze in Reichweite)</div>
     <div class="load-bar-wrap"><div class="load-bar" id="load-bar" style="width:0%"></div></div>
   </div>
   <div class="card">
@@ -495,8 +586,12 @@ canvas { display: block; }
       <option value="168">7 Tage</option>
     </select>
   </div>
-  <canvas id="chart" height="160"></canvas>
-  <p class="chart-hint">RSRP (blau) misst die Empfangsstärke der Zelle – höhere Werte (weniger negativ) sind besser. RSRQ (gelb) zeigt die Signalqualität; sinkende Werte deuten auf erhöhte Netzlast oder Interferenzen hin. Die gestrichelte Linie zeigt RSRP der 2. Zelle (Carrier Aggregation), falls verbunden.</p>
+  <p class="chart-subtitle">RSRP (dBm) – Empfangsstärke</p>
+  <canvas id="chart-rsrp" height="130"></canvas>
+  <p class="chart-subtitle">RSRQ (dB) – Signalqualität</p>
+  <canvas id="chart-rsrq" height="110"></canvas>
+  <p id="chart-coverage" class="chart-hint chart-coverage" hidden></p>
+  <p class="chart-hint">RSRP: höhere Werte (weniger negativ) sind besser. Gestrichelt = 2. Zelle (Carrier Aggregation). RSRQ: sinkende Werte können auf Störungen oder Netzlast hindeuten – ist aber nicht dasselbe wie die Zell-Auslastung in % unten.</p>
 </div>
 
 <!-- Netzlastverlauf -->
@@ -505,11 +600,12 @@ canvas { display: block; }
     <span class="section-title">Netzlast-Verlauf (%)</span>
   </div>
   <canvas id="chart-load" height="100"></canvas>
-  <p class="chart-hint">Zellenauslastung in % – wenn möglich direkt aus der Fritzbox (Feld "Nutzung"), sonst aus RSRQ geschätzt. Grün &lt; 40 % · Gelb &lt; 65 % · Rot ≥ 65 %. Hohe Auslastung bedeutet, dass viele andere Nutzer dieselbe Zelle verwenden und dein Datendurchsatz sinkt.</p>
+  <p id="load-coverage" class="chart-hint chart-coverage" hidden></p>
+  <p class="chart-hint">Zellenauslastung wie in der Fritzbox unter „Internet → LTE-Informationen → Netze in Reichweite“ (Spalte Nutzung) für die <strong>verbundene</strong> Zelle. Grün &lt; 40 % · Gelb &lt; 65 % · Rot ≥ 65 %.</p>
 </div>
 
 <script>
-let chart, chartLoad;
+let chartRsrp, chartRsrq, chartLoad;
 
 function rsrpClass(v) {
   if (v == null) return 'na';
@@ -529,11 +625,6 @@ function loadClass(pct) {
   if (pct < 65) return 'ok';
   return 'weak';
 }
-// RSRQ → Netzlast %:  -3 dB = 0 %, -19.5 dB = 100 %
-function netzlast(rsrq) {
-  if (rsrq == null) return null;
-  return Math.max(0, Math.min(100, (rsrq + 3) / -16.5 * 100));
-}
 function loadColor(pct) {
   if (pct == null) return '#555570';
   if (pct < 40) return '#4ade80';
@@ -545,26 +636,101 @@ function fmt(val, dec=1, suffix='') {
 }
 function tsLabel(ts, hours) {
   const d = new Date(ts);
-  if (hours > 48) return (d.getMonth()+1)+'/'+d.getDate()+' '+
+  const h = Number(hours);
+  if (h > 48) return (d.getMonth()+1)+'/'+d.getDate()+' '+
     String(d.getHours()).padStart(2,'0')+':00';
   return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
 }
 
-const chartOpts = {
-  responsive: true, animation: false,
-  interaction: { mode: 'index', intersect: false },
-  plugins: {
-    legend: { labels: { color: '#555570', font: { size: 11 } } },
-    tooltip: {
-      backgroundColor: '#1e1e2a', titleColor: '#aaa',
-      bodyColor: '#ccc', borderColor: '#333', borderWidth: 1,
+// Lücken >3 min unterbrechen die Linie (kein „Durchziehen“ über Offline-Zeiten).
+const GAP_BREAK_MS = 3 * 60 * 1000;
+
+function tsMs(ts) { return new Date(ts).getTime(); }
+
+function pointsWithGaps(rows, key) {
+  const pts = [];
+  for (let i = 0; i < rows.length; i++) {
+    if (i > 0 && tsMs(rows[i].ts) - tsMs(rows[i - 1].ts) > GAP_BREAK_MS) {
+      pts.push({ x: tsMs(rows[i - 1].ts) + 1, y: null });
     }
-  },
-  scales: {
-    x: { ticks: { color: '#444460', maxRotation: 0, maxTicksLimit: 10 }, grid: { color: '#1a1a22' } },
-    y: { ticks: { color: '#444460' }, grid: { color: '#1a1a22' } }
+    const y = rows[i][key];
+    pts.push({ x: tsMs(rows[i].ts), y: y == null ? null : y });
   }
-};
+  return pts;
+}
+
+function timeScaleOpts(hours) {
+  const h = Number(hours);
+  const now = Date.now();
+  return {
+    type: 'linear',
+    min: now - h * 3600000,
+    max: now,
+    ticks: {
+      color: '#444460', maxRotation: 0, maxTicksLimit: 10,
+      callback: (v) => tsLabel(new Date(v).toISOString(), h),
+    },
+    grid: { color: '#1a1a22' },
+  };
+}
+
+function baseChartOpts(hours) {
+  return {
+    responsive: true, animation: false,
+    interaction: { mode: 'nearest', axis: 'x', intersect: false },
+    plugins: {
+      legend: { labels: { color: '#555570', font: { size: 11 } } },
+      tooltip: {
+        backgroundColor: '#1e1e2a', titleColor: '#aaa',
+        bodyColor: '#ccc', borderColor: '#333', borderWidth: 1,
+        callbacks: {
+          title: (items) => {
+            if (!items.length) return '';
+            return new Date(items[0].parsed.x).toLocaleString('de-DE');
+          },
+        },
+      },
+    },
+    scales: {
+      x: timeScaleOpts(hours),
+      y: { ticks: { color: '#444460' }, grid: { color: '#1a1a22' } },
+    },
+  };
+}
+
+function lineDataset(label, rows, key, style) {
+  return Object.assign({
+    data: pointsWithGaps(rows, key),
+    spanGaps: false,
+    tension: 0,
+    pointRadius: 1.5,
+    borderWidth: 1.5,
+  }, style, { label });
+}
+
+function updateCoverageHint(rows, hours) {
+  const el = document.getElementById('chart-coverage');
+  const h = Number(hours);
+  if (!rows.length) {
+    el.hidden = false;
+    el.textContent = 'Keine Messdaten im gewählten Zeitraum – die App war vermutlich nicht aktiv.';
+    return;
+  }
+  const spanH = rows.length > 1
+    ? (tsMs(rows[rows.length - 1].ts) - tsMs(rows[0].ts)) / 3600000
+    : 0;
+  if (spanH < h * 0.85) {
+    el.hidden = false;
+    const spanTxt = rows.length > 1
+      ? 'etwa ' + (spanH < 1 ? Math.round(spanH * 60) + ' Min.' : Math.round(spanH) + ' Std.')
+      : 'nur ein Messpunkt';
+    el.textContent = 'Hinweis: Im gewählten ' + h + '-h-Fenster liegen ' + spanTxt
+      + ' mit echten Messungen (' + rows.length + ' Punkte). Fehlende Zeiten werden nicht interpoliert.';
+  } else {
+    el.hidden = true;
+    el.textContent = '';
+  }
+}
 
 async function loadLatest() {
   try {
@@ -578,18 +744,23 @@ async function loadLatest() {
     document.getElementById('v-rsrq').textContent = fmt(d.rsrq, 1);
     document.getElementById('v-rsrq').className = 'card-value ' + rsrqClass(d.rsrq);
 
-    // Netzlast – Fritz!Box-Direktwert bevorzugt, sonst RSRQ-Schätzung
-    const pct    = d.nutzung != null ? d.nutzung : netzlast(d.rsrq);
-    const direct = d.nutzung != null;
-    const lc     = loadClass(pct);
+    // Netzlast – nur Fritzbox-Scanliste (keine RSRQ-Schätzung)
+    const pct = d.nutzung;
+    const lc  = loadClass(pct);
     document.getElementById('v-load').textContent = pct != null ? Math.round(pct) + ' %' : '–';
     document.getElementById('v-load').className = 'card-value ' + lc;
     document.getElementById('load-bar').style.width = (pct || 0) + '%';
     document.getElementById('load-bar').style.background = loadColor(pct);
-    document.getElementById('v-load-hint').textContent = direct ? 'direkt' : 'aus RSRQ';
-    document.getElementById('v-load-source').textContent = direct
-      ? '% Zellenauslastung (Fritzbox)'
-      : '% geschätzte Zellenauslastung';
+    if (d.nutzung_source === 'scanlist') {
+      document.getElementById('v-load-hint').textContent = 'Fritzbox';
+      document.getElementById('v-load-source').textContent = 'Zell-Auslastung (Netze in Reichweite)';
+    } else if (pct != null) {
+      document.getElementById('v-load-hint').textContent = 'TR-064';
+      document.getElementById('v-load-source').textContent = 'Zell-Auslastung aus Modem-API';
+    } else {
+      document.getElementById('v-load-hint').textContent = 'kein Wert';
+      document.getElementById('v-load-source').textContent = 'Wird beim nächsten Poll aus der Fritzbox-UI gelesen';
+    }
 
     // RSSI
     document.getElementById('v-rssi').textContent = fmt(d.rssi, 0);
@@ -617,42 +788,82 @@ async function loadLatest() {
   }
 }
 
-async function loadChart() {
-  const hours = document.getElementById('range').value;
-  const rows  = await fetch('/api/history?hours=' + hours).then(r => r.json());
-  const labels = rows.map(r => tsLabel(r.ts, hours));
-
-  // Signalverlauf
-  const ds1 = [
-    { label: 'RSRP primär (dBm)',    data: rows.map(r => r.rsrp),  borderColor: '#818cf8', backgroundColor: 'rgba(129,140,248,0.06)', tension: 0.3, pointRadius: 1.5, borderWidth: 1.5 },
-    { label: 'RSRP sekundär (dBm)',  data: rows.map(r => r.rsrp2), borderColor: '#a78bfa', backgroundColor: 'rgba(167,139,250,0.04)', tension: 0.3, pointRadius: 1, borderWidth: 1, borderDash: [4,4] },
-    { label: 'RSRQ primär (dB)',     data: rows.map(r => r.rsrq),  borderColor: '#fbbf24', backgroundColor: 'rgba(251,191,36,0.06)',  tension: 0.3, pointRadius: 1.5, borderWidth: 1.5 },
-  ];
-  if (chart) {
-    chart.data.labels = labels; chart.data.datasets = ds1; chart.update('none');
-  } else {
-    chart = new Chart(document.getElementById('chart'), { type: 'line', data: { labels, datasets: ds1 }, options: chartOpts });
+function upsertChart(inst, elId, datasets, opts) {
+  if (inst) {
+    inst.options = opts;
+    inst.data.datasets = datasets;
+    inst.update('none');
+    return inst;
   }
+  return new Chart(document.getElementById(elId), { type: 'line', data: { datasets }, options: opts });
+}
 
-  // Netzlastverlauf – Fritz!Box-Direktwert bevorzugt, sonst RSRQ-Schätzung
-  const loadData = rows.map(r => r.nutzung != null ? r.nutzung : netzlast(r.rsrq));
-  const loadColors = loadData.map(v => loadColor(v));
-  const ds2 = [{
-    label: 'Netzlast (%)',
-    data: loadData,
+function updateLoadCoverageHint(rows) {
+  const el = document.getElementById('load-coverage');
+  const withLoad = rows.filter(r => r.nutzung != null).length;
+  if (!withLoad) {
+    el.hidden = false;
+    el.textContent = 'Noch keine Netzlast-Messwerte in diesem Zeitraum. Nach App-Neustart werden sie aus der Fritzbox-Scanliste protokolliert (alte Einträge hatten nur eine RSRQ-Schätzung).';
+    return;
+  }
+  if (withLoad < rows.length * 0.5) {
+    el.hidden = false;
+    el.textContent = 'Nur ' + withLoad + ' von ' + rows.length + ' Punkten mit echter Fritzbox-Netzlast – ältere Daten ohne dieses Feld.';
+  } else {
+    el.hidden = true;
+    el.textContent = '';
+  }
+}
+
+async function loadChart() {
+  const hours = Number(document.getElementById('range').value);
+  const rows  = await fetch('/api/history?hours=' + hours).then(r => r.json());
+  updateCoverageHint(rows, hours);
+
+  const rsrpOpts = baseChartOpts(hours);
+  rsrpOpts.scales.y.suggestedMin = -120;
+  rsrpOpts.scales.y.suggestedMax = -70;
+  const dsRsrp = [
+    lineDataset('RSRP primär (dBm)', rows, 'rsrp', {
+      borderColor: '#818cf8', backgroundColor: 'rgba(129,140,248,0.06)',
+    }),
+    lineDataset('RSRP sekundär (dBm)', rows, 'rsrp2', {
+      borderColor: '#a78bfa', backgroundColor: 'rgba(167,139,250,0.04)',
+      pointRadius: 1, borderDash: [4, 4],
+    }),
+  ];
+  chartRsrp = upsertChart(chartRsrp, 'chart-rsrp', dsRsrp, rsrpOpts);
+
+  const rsrqOpts = baseChartOpts(hours);
+  rsrqOpts.scales.y.suggestedMin = -20;
+  rsrqOpts.scales.y.suggestedMax = -3;
+  const dsRsrq = [
+    lineDataset('RSRQ primär (dB)', rows, 'rsrq', {
+      borderColor: '#fbbf24', backgroundColor: 'rgba(251,191,36,0.06)',
+    }),
+  ];
+  chartRsrq = upsertChart(chartRsrq, 'chart-rsrq', dsRsrq, rsrqOpts);
+
+  updateLoadCoverageHint(rows);
+  const loadRows = rows.filter(r => r.nutzung != null).map(r => ({ ts: r.ts, nutzung: r.nutzung }));
+  const loadPts = pointsWithGaps(loadRows, 'nutzung');
+  const loadColors = loadPts.map(p => loadColor(p.y));
+  const loadOpts = baseChartOpts(hours);
+  loadOpts.scales.y.min = 0;
+  loadOpts.scales.y.max = 100;
+  loadOpts.scales.y.ticks.callback = v => v + '%';
+  const dsLoad = [{
+    label: 'Netzlast verbundene Zelle (%)',
+    data: loadPts,
+    spanGaps: false,
+    tension: 0,
     borderColor: '#fb923c',
     backgroundColor: 'rgba(251,146,60,0.08)',
-    tension: 0.3, pointRadius: 1.5, borderWidth: 1.5,
+    pointRadius: 1.5,
+    borderWidth: 1.5,
     pointBackgroundColor: loadColors,
   }];
-  const loadOpts = JSON.parse(JSON.stringify(chartOpts));
-  loadOpts.scales.y.min = 0; loadOpts.scales.y.max = 100;
-  loadOpts.scales.y.ticks.callback = v => v + '%';
-  if (chartLoad) {
-    chartLoad.data.labels = labels; chartLoad.data.datasets = ds2; chartLoad.update('none');
-  } else {
-    chartLoad = new Chart(document.getElementById('chart-load'), { type: 'line', data: { labels, datasets: ds2 }, options: loadOpts });
-  }
+  chartLoad = upsertChart(chartLoad, 'chart-load', dsLoad, loadOpts);
 }
 
 loadLatest();

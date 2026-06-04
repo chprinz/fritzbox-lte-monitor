@@ -10,7 +10,7 @@ macOS menu-bar app for AVM Fritzbox LTE routers (e.g. 6890 LTE). Polls signal me
 
 - **Menu-bar indicator** 🟢/🟡/🔴 with current RSRP value
 - **Live dashboard** with cards for RSRP, RSRQ, RSSI and cell load
-- **Cell load** read directly from the Fritzbox (`Utilization` field), with RSRQ-based fallback
+- **Cell load** read from the Fritzbox web UI scan list (“Nutzung” column, same as *Netze in Reichweite*)
 - **Carrier Aggregation** — secondary cell RSRP/RSRQ shown separately
 - **Signal history** chart (6h / 24h / 3d / 7d)
 - **Cell distance** for primary and secondary cell
@@ -25,7 +25,7 @@ macOS menu-bar app for AVM Fritzbox LTE routers (e.g. 6890 LTE). Polls signal me
 |--------|-------------|------|----|------|
 | **RSRP** | Received signal strength (dBm) | ≥ −80 | ≥ −95 | < −95 |
 | **RSRQ** | Signal quality — drops under load (dB) | ≥ −9 | ≥ −12 | < −12 |
-| **Cell load** | Channel utilization % (direct or estimated) | < 40 % | < 65 % | ≥ 65 % |
+| **Cell load** | Channel utilization % (Fritzbox scan list) | < 40 % | < 65 % | ≥ 65 % |
 | **RSSI** | Total received power incl. noise (dBm) | ≥ −80 | — | — |
 
 Menu-bar icon meanings:
@@ -144,13 +144,13 @@ print(fc.call_action('X_AVM-DE_WANMobileConnection:1', 'GetInfoEx'))
 "
 ```
 
-**Cell load shows "from RSRQ" instead of "direct":**
+**Cell load shows "kein Wert" / empty chart:**
 
-The Fritzbox reports utilization in the `<Utilization>` XML tag. The `/api/debug` endpoint (http://127.0.0.1:5433/api/debug) shows the raw XML — if the tag name differs in your firmware version, adjust it in `_parse_cell()`.
+TR-064 `GetInfoEx` does not include cell utilization on most firmware versions. The app reads the **Nutzung** column from the Fritzbox page *Internet → LTE information → Networks in range* (`lte_scanlist.lua`). Ensure web login works (username/password in the menu). After restarting the app, new polls should show **Fritzbox** under the Netzlast card. Old database rows have no utilization values.
 
 **Debug endpoint:**
 
-http://127.0.0.1:5433/api/debug — shows the last 5 raw entries from the database.
+http://127.0.0.1:5433/api/debug — last 5 raw TR-064 payloads from the database.
 
 ---
 
